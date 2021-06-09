@@ -61,19 +61,20 @@ namespace ObfuscarTests
             BuildAssembly(name, suffix, null);
         }
 
-        public static void BuildAssembly(string name, string suffix = null, string options = null)
+        public static void BuildAssembly(string name, string suffix = null, string options = null, bool treatWarningsAsErrors = true)
         {
             Microsoft.CSharp.CSharpCodeProvider provider = new Microsoft.CSharp.CSharpCodeProvider();
 
             CompilerParameters cp = new CompilerParameters();
             cp.GenerateExecutable = false;
             cp.GenerateInMemory = false;
-            cp.TreatWarningsAsErrors = true;
+            cp.ReferencedAssemblies.Add("System.Runtime.Serialization.dll");
+            cp.TreatWarningsAsErrors = treatWarningsAsErrors;
 
-            if (!String.IsNullOrEmpty(options))
+            if (!string.IsNullOrEmpty(options))
                 cp.CompilerOptions = options;
 
-            string dllName = String.IsNullOrEmpty(suffix) ? name : name + suffix;
+            string dllName = string.IsNullOrEmpty(suffix) ? name : name + suffix;
 
             string fileName = GetAssemblyPath(dllName);
             if (File.Exists(fileName))

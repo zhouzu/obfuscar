@@ -28,7 +28,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
-using System.Diagnostics;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Cecil.Rocks;
@@ -514,7 +513,7 @@ namespace Obfuscar
                         Console.Error.WriteLine("Still in pool:");
                         foreach (var node in pool)
                         {
-                            var parents = String.Join(", ",
+                            var parents = string.Join(", ",
                                 node.Parents.Select(p => p.Item.FullName + " " + p.Item.Scope.Name));
                             Console.Error.WriteLine("{0} {1} : [{2}]", node.Item.FullName, node.Item.Scope.Name,
                                 parents);
@@ -688,7 +687,7 @@ namespace Obfuscar
             }
         }
 
-        public string Filename
+        public string FileName
         {
             get
             {
@@ -696,6 +695,8 @@ namespace Obfuscar
                 return filename;
             }
         }
+
+        public string OutputFileName { get; set; }
 
         public AssemblyDefinition Definition
         {
@@ -913,7 +914,10 @@ namespace Obfuscar
                 return true;
             }
 
-            if (method.DeclaringType.IsTypePublic() && method.Method.IsPublic())
+            if (method.Method.IsPublic() && (
+                method.DeclaringType.IsTypePublic() ||
+                map.GetMethodGroup(method)?.Methods.FirstOrDefault(m => m.DeclaringType.IsTypePublic()) != null
+            ))
             {
                 message = "KeepPublicApi option in configuration";
                 return keepPublicApi;
@@ -1004,7 +1008,7 @@ namespace Obfuscar
                 return true;
             }
 
-            if (field.DeclaringType.IsTypePublic() && (field.Field.IsPublic || field.Field.IsFamily))
+            if (field.Field.IsPublic() && field.DeclaringType.IsTypePublic())
             {
                 message = "KeepPublicApi option in configuration";
                 return keepPublicApi;
@@ -1067,7 +1071,11 @@ namespace Obfuscar
                 return true;
             }
 
-            if (prop.DeclaringType.IsTypePublic() && prop.Property.IsPublic())
+            if (prop.Property.IsPublic() && (
+                prop.DeclaringType.IsTypePublic() ||
+                prop.Property.GetMethod != null && map.GetMethodGroup(new MethodKey(prop.Property.GetMethod))?.Methods?.FirstOrDefault(m => m.DeclaringType.IsTypePublic()) != null ||
+                prop.Property.SetMethod != null && map.GetMethodGroup(new MethodKey(prop.Property.SetMethod))?.Methods?.FirstOrDefault(m => m.DeclaringType.IsTypePublic()) != null
+            ))
             {
                 message = "KeepPublicApi option in configuration";
                 return keepPublicApi;
@@ -1132,7 +1140,11 @@ namespace Obfuscar
                 return true;
             }
 
-            if (evt.DeclaringType.IsTypePublic() && evt.Event.IsPublic())
+            if (evt.Event.IsPublic() && (
+                evt.DeclaringType.IsTypePublic() ||
+                evt.Event.AddMethod != null && map.GetMethodGroup(new MethodKey(evt.Event.AddMethod))?.Methods?.FirstOrDefault(m => m.DeclaringType.IsTypePublic()) != null ||
+                evt.Event.RemoveMethod != null && map.GetMethodGroup(new MethodKey(evt.Event.RemoveMethod))?.Methods?.FirstOrDefault(m => m.DeclaringType.IsTypePublic()) != null
+            ))
             {
                 message = "KeepPublicApi option in configuration";
                 return keepPublicApi;

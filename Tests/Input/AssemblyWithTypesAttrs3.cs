@@ -34,10 +34,25 @@ namespace TestClasses
         Test = 1
     }
 
-    [System.Reflection.ObfuscationAttribute(Exclude=false, ApplyToMembers=true)]
+    [System.Reflection.ObfuscationAttribute(Exclude=false, ApplyToMembers=true, StripAfterObfuscation = true)]
+    [System.Runtime.Serialization.DataContract]
     public class PublicClass
     {
         public virtual void PublicMethod()
         { }
+
+        [System.Reflection.ObfuscationAttribute(Exclude = true)]
+        public void Test()
+        { }
+
+        [System.Reflection.ObfuscationAttribute(Exclude = true, StripAfterObfuscation = false)]
+        public void Test2()
+        { }
+
+        [System.Runtime.Serialization.DataMember(Name = "access_token")]
+        public int TestInt { get; set; }
+
+        [System.Runtime.Serialization.DataMember(Name = "token_type")]
+        public long TestLong { get; set; }
     }
 }

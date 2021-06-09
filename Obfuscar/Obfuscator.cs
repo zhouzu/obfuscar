@@ -34,8 +34,9 @@ using System.Linq;
 using System.Resources;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Xml.Linq;
-using Confuser.Renamer.BAML;
+using ILSpy.BamlDecompiler.Baml;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Cecil.Rocks;
@@ -180,7 +181,7 @@ namespace Obfuscar
             //copy excluded assemblies
             foreach (AssemblyInfo copyInfo in Project.CopyAssemblyList)
             {
-                var fileName = Path.GetFileName(copyInfo.Filename);
+                var fileName = Path.GetFileName(copyInfo.FileName);
                 // ReSharper disable once InvocationIsSkipped
                 Debug.Assert(fileName != null, "fileName != null");
                 // ReSharper disable once AssignNullToNotNullAttribute
@@ -189,7 +190,7 @@ namespace Obfuscar
             }
 
             // Cecil does not properly update the name cache, so force that:
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 var types = info.Definition.MainModule.Types;
                 for (int i = 0; i < types.Count; i++)
@@ -197,9 +198,9 @@ namespace Obfuscar
             }
 
             // save the modified assemblies
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
-                var fileName = Path.GetFileName(info.Filename);
+                var fileName = Path.GetFileName(info.FileName);
                 try
                 {
                     // ReSharper disable once InvocationIsSkipped
@@ -208,33 +209,70 @@ namespace Obfuscar
                     string outName = Path.Combine(outPath, fileName);
                     var parameters = new WriterParameters();
                     if (Project.Settings.RegenerateDebugInfo)
-                        parameters.SymbolWriterProvider = new Mono.Cecil.Pdb.PdbWriterProvider();
+                    {
+                        if (IsOnWindows)
+                        {
+                            parameters.SymbolWriterProvider = new Mono.Cecil.Cil.PortablePdbWriterProvider();
+                        }
+                        else
+                        {
+                            parameters.SymbolWriterProvider = new Mono.Cecil.Pdb.PdbWriterProvider();
+                        }
+                    }
 
                     if (info.Definition.Name.HasPublicKey)
                     {
+                        // source assembly was signed.
                         if (Project.KeyValue != null)
                         {
+                            // config file contains key container name.
                             info.Definition.Write(outName, parameters);
                             MsNetSigner.SignAssemblyFromKeyContainer(outName, Project.KeyContainerName);
                         }
                         else if (Project.KeyPair != null)
                         {
-                            var strongNameKeyPair = new System.Reflection.StrongNameKeyPair(Project.KeyPair);
+                            // config file contains key file.
+                            string keyFile = Project.KeyPair;
+                            if (string.Equals(keyFile, "auto", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // if key file is "auto", resolve key file from assembly's attribute.
+                                var attribute = info.Definition.CustomAttributes
+                                    .FirstOrDefault(item => item.AttributeType.FullName == "System.Reflection.AssemblyKeyFileAttribute");
+                                if (attribute != null && attribute?.ConstructorArguments.Count == 1)
+                                {
+                                    fileName = attribute.ConstructorArguments[0].Value.ToString();
+                                    if (!File.Exists(fileName))
+                                    {
+                                        // assume relative path.
+                                        keyFile = Path.Combine(Project.Settings.InPath, fileName);
+                                    }
+                                }
+                            }
+
+                            if (!File.Exists(keyFile))
+                            {
+                                throw new ObfuscarException($"Cannot locate key file: {keyFile}");
+                            }
+
+                            var keyPair = File.ReadAllBytes(keyFile);
                             try
                             {
-                                var publicKey = strongNameKeyPair.PublicKey;
-#if NETCOREAPP2_1
-                                throw new PlatformNotSupportedException("Signing is not supported in .NET Core Global Tools build");
-#else
-                                parameters.StrongNameKeyPair = strongNameKeyPair;
+                                parameters.StrongNameKeyBlob = keyPair;
                                 info.Definition.Write(outName, parameters);
-#endif
+                                info.OutputFileName = outName;
                             }
-                            catch (ArgumentException)
+                            catch (Exception)
                             {
+                                parameters.StrongNameKeyBlob = null;
+                                if (info.Definition.MainModule.Attributes.HasFlag(ModuleAttributes.StrongNameSigned))
+                                {
+                                    info.Definition.MainModule.Attributes ^= ModuleAttributes.StrongNameSigned;
+                                }
+
                                 // delay sign.
-                                info.Definition.Name.PublicKey = Project.KeyPair;
+                                info.Definition.Name.PublicKey = keyPair;
                                 info.Definition.Write(outName, parameters);
+                                info.OutputFileName = outName;
                             }
                         }
                         else
@@ -245,6 +283,7 @@ namespace Obfuscar
                     else
                     {
                         info.Definition.Write(outName, parameters);
+                        info.OutputFileName = outName;
                     }
                 }
                 catch (Exception e)
@@ -254,13 +293,13 @@ namespace Obfuscar
                         throw;
                     }
 
-                    LogOutput(String.Format("\nFailed to save {0}", fileName));
-                    LogOutput(String.Format("\n{0}: {1}", e.GetType().Name, e.Message));
+                    LogOutput(string.Format("\nFailed to save {0}", fileName));
+                    LogOutput(string.Format("\n{0}: {1}", e.GetType().Name, e.Message));
                     var match = Regex.Match(e.Message, @"Failed to resolve\s+(?<name>[^\s]+)");
                     if (match.Success)
                     {
                         var name = match.Groups["name"].Value;
-                        LogOutput(String.Format("\n{0} might be one of:", name));
+                        LogOutput(string.Format("\n{0} might be one of:", name));
                         LogMappings(name);
                         LogOutput("\nHint: you might need to add a SkipType for an enum above.");
                     }
@@ -270,11 +309,19 @@ namespace Obfuscar
             TypeNameCache.nameCache.Clear();
         }
 
+        private bool IsOnWindows {
+            get {
+                // https://stackoverflow.com/a/38795621/11182
+                string windir = Environment.GetEnvironmentVariable("windir");
+                return !string.IsNullOrEmpty(windir) && windir.Contains(@"\") && Directory.Exists(windir);
+            }
+        }
+
         private void LogMappings(string name)
         {
             foreach (var tuple in Mapping.FindClasses(name))
             {
-                LogOutput(String.Format("\n{0} => {1}", tuple.Item1.Fullname, tuple.Item2));
+                LogOutput(string.Format("\n{0} => {1}", tuple.Item1.Fullname, tuple.Item2));
             }
         }
 
@@ -286,11 +333,11 @@ namespace Obfuscar
             string filename = Project.Settings.XmlMapping ? "Mapping.xml" : "Mapping.txt";
 
             string logPath = Path.Combine(Project.Settings.OutPath, filename);
-            if (!String.IsNullOrEmpty(Project.Settings.LogFilePath))
+            if (!string.IsNullOrEmpty(Project.Settings.LogFilePath))
                 logPath = Project.Settings.LogFilePath;
 
             string lPath = Path.GetDirectoryName(logPath);
-            if (!String.IsNullOrEmpty(lPath) && !Directory.Exists(lPath))
+            if (!string.IsNullOrEmpty(lPath) && !Directory.Exists(lPath))
                 Directory.CreateDirectory(lPath);
 
             using (TextWriter file = File.CreateText(logPath))
@@ -319,7 +366,7 @@ namespace Obfuscar
         /// </summary>
         private void LoadMethodSemantics()
         {
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
                 {
@@ -342,7 +389,7 @@ namespace Obfuscar
                 return;
             }
 
-            foreach (var info in Project)
+            foreach (var info in Project.AssemblyList)
             {
                 // loop through the types
                 foreach (var type in info.GetAllTypeDefinitions())
@@ -424,7 +471,7 @@ namespace Obfuscar
         /// </summary>
         public void RenameParams()
         {
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 // loop through the types
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
@@ -475,7 +522,7 @@ namespace Obfuscar
         public void RenameTypes()
         {
             //var typerenamemap = new Dictionary<string, string> (); // For patching the parameters of typeof(xx) attribute constructors
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 AssemblyDefinition library = info.Definition;
 
@@ -483,7 +530,7 @@ namespace Obfuscar
                 List<Resource> resources = new List<Resource>(library.MainModule.Resources.Count);
                 resources.AddRange(library.MainModule.Resources);
 
-                var xamlFiles = GetXamlDocuments(library);
+                var xamlFiles = GetXamlDocuments(library, Project.Settings.AnalyzeXaml);
                 var namesInXaml = NamesInXaml(xamlFiles);
 
                 // Save the original names of all types because parent (declaring) types of nested types may be already renamed.
@@ -662,9 +709,14 @@ namespace Obfuscar
             return result;
         }
 
-        private List<BamlDocument> GetXamlDocuments(AssemblyDefinition library)
+        private List<BamlDocument> GetXamlDocuments(AssemblyDefinition library, bool analyzeXaml)
         {
             var result = new List<BamlDocument>();
+            if (!analyzeXaml)
+            {
+                return result;
+            }
+
             foreach (Resource res in library.MainModule.Resources)
             {
                 var embed = res as EmbeddedResource;
@@ -698,7 +750,7 @@ namespace Obfuscar
 
                         try
                         {
-                            result.Add(BamlReader.ReadDocument(stream));
+                            result.Add(BamlReader.ReadDocument(stream, CancellationToken.None));
                         }
                         catch (ArgumentException)
                         {
@@ -785,7 +837,7 @@ namespace Obfuscar
                 return;
             }
 
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
                 {
@@ -902,7 +954,7 @@ namespace Obfuscar
                 return;
             }
 
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
                 {
@@ -964,7 +1016,7 @@ namespace Obfuscar
         public void RenameMethods()
         {
             var baseSigNames = new Dictionary<TypeKey, Dictionary<ParamSig, NameGroup>>();
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
                 {
@@ -1306,7 +1358,7 @@ namespace Obfuscar
         /// </summary>
         internal void HideStrings()
         {
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 AssemblyDefinition library = info.Definition;
                 StringSqueeze container = new StringSqueeze(library);
@@ -1333,17 +1385,35 @@ namespace Obfuscar
 
         public void PostProcessing()
         {
-            foreach (AssemblyInfo info in Project)
+            foreach (AssemblyInfo info in Project.AssemblyList)
             {
                 foreach (TypeDefinition type in info.GetAllTypeDefinitions())
                 {
                     if (type.FullName == "<Module>")
                         continue;
 
+                    type.CleanAttributes();
+
+                    foreach (var field in type.Fields)
+                    {
+                        field.CleanAttributes();
+                    }
+
+                    foreach (var property in type.Properties)
+                    {
+                        property.CleanAttributes();
+                    }
+
+                    foreach (var eventItem in type.Events)
+                    {
+                        eventItem.CleanAttributes();
+                    }
+
                     // first pass.  mark grouped virtual methods to be renamed, and mark some things
                     // to be skipped as neccessary
                     foreach (MethodDefinition method in type.Methods)
                     {
+                        method.CleanAttributes();
                         if (method.HasBody && Project.Settings.Optimize)
                             method.Body.Optimize();
                     }
@@ -1355,7 +1425,7 @@ namespace Obfuscar
                 var module = info.Definition.MainModule;
                 var attribute = new TypeReference("System.Runtime.CompilerServices", "SuppressIldasmAttribute", module,
                     module.TypeSystem.CoreLibrary).Resolve();
-                if (attribute == null)
+                if (attribute == null || attribute.Module != module.TypeSystem.CoreLibrary)
                     return;
 
                 CustomAttribute found = module.CustomAttributes.FirstOrDefault(existing =>
@@ -1459,32 +1529,32 @@ namespace Obfuscar
                     TypeAttributes.BeforeFieldInit, systemObjectTypeReference);
 
                 // Add struct for constant byte array data
-                StructType = new TypeDefinition("\0", "",
+                StructType = new TypeDefinition("1", "2",
                     TypeAttributes.ExplicitLayout | TypeAttributes.AnsiClass | TypeAttributes.Sealed |
                     TypeAttributes.NestedPrivate, systemValueTypeTypeReference);
                 StructType.PackingSize = 1;
                 NewType.NestedTypes.Add(StructType);
 
                 // Add field with constant string data
-                DataConstantField = new FieldDefinition("\0",
+                DataConstantField = new FieldDefinition("3",
                     FieldAttributes.HasFieldRVA | FieldAttributes.Private | FieldAttributes.Static |
                     FieldAttributes.Assembly, StructType);
                 NewType.Fields.Add(DataConstantField);
 
                 // Add data field where constructor copies the data to
-                DataField = new FieldDefinition("\0\0",
+                DataField = new FieldDefinition("4",
                     FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.Assembly,
                     new ArrayType(SystemByteTypeReference));
                 NewType.Fields.Add(DataField);
 
                 // Add string array of deobfuscated strings
-                StringArrayField = new FieldDefinition("\0\0\0",
+                StringArrayField = new FieldDefinition("5",
                     FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.Assembly,
                     new ArrayType(SystemStringTypeReference));
                 NewType.Fields.Add(StringArrayField);
 
                 // Add method to extract a string from the byte array. It is called by the indiviual string getter methods we add later to the class.
-                StringGetterMethodDefinition = new MethodDefinition("\0",
+                StringGetterMethodDefinition = new MethodDefinition("6",
                     MethodAttributes.Static | MethodAttributes.Private | MethodAttributes.HideBySig,
                     SystemStringTypeReference);
                 StringGetterMethodDefinition.Parameters.Add(new ParameterDefinition(SystemIntTypeReference));

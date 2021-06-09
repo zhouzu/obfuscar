@@ -1,14 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;net45</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;net452</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\ThirdParty\ConfuserEx\Confuser.Renamer\BAML\BamlDocument.cs" Link="BamlDocument.cs" />
-    <Compile Include="..\ThirdParty\ConfuserEx\Confuser.Renamer\BAML\BamlRecords.cs" Link="BamlRecords.cs" />
-    <Compile Include="..\ThirdParty\ConfuserEx\Confuser.Renamer\BAML\BamlRW.cs" Link="BamlRW.cs" />
-    <Compile Include="..\ThirdParty\ConfuserEx\Confuser.Renamer\BAML\PropertyPath.cs" Link="PropertyPath.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ILSpy.BamlDecompiler\BAML\BamlDocument.cs" Link="BamlDocument.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ILSpy.BamlDecompiler\BAML\BamlRecords.cs" Link="BamlRecords.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ILSpy.BamlDecompiler\BAML\BamlReader.cs" Link="BamlReader.cs" />
+    <Compile Include="..\ThirdParty\ILSpy\ILSpy.BamlDecompiler\BAML\BamlWriter.cs" Link="BamlWriter.cs" />
   </ItemGroup>
 
 </Project>
